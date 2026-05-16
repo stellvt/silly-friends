@@ -13,6 +13,7 @@ import {
   getThumbnailUrl,
   isGenerating,
   name1,
+  openCharacterChat,
   online_status,
   reloadCurrentChat,
   saveChatConditional,
@@ -33,6 +34,7 @@ const PLUGIN_ID = "silly-friends";
 const MAX_MESSAGE_LENGTH = 4000;
 const RELAY_REQUEST_TIMEOUT_MS = 15000;
 const PENDING_CONTAINER_ID = "silly_friends_pending_messages";
+const TYPING_CONTAINER_ID = "silly_friends_chat_typing";
 const MODEL_EDIT_CONTAINER_ID = "silly_friends_model_edit_proposals";
 const COMMIT_BUTTON_ID = "silly_friends_commit_turn";
 const { toastr, jQuery } = globalThis;
@@ -109,6 +111,8 @@ const runtime = {
   eventStream: null,
   pollTimer: null,
   pollBusy: false,
+  guestFullSyncTimer: null,
+  guestFullSyncBusy: false,
   reconnectTimer: null,
   reconnectAttempts: 0,
 };
@@ -183,6 +187,7 @@ function renderSettings() {
                     <div class="silly-friends-section">
                         <b>Party</b>
                         <div id="silly_friends_status">Disconnected</div>
+                        <div id="silly_friends_typing" class="displayNone"></div>
                         <div id="silly_friends_roster"></div>
                         <div id="silly_friends_model_edit_panel" class="displayNone">
                             <div class="silly-friends-model-edit-title">Bot edit proposals (host approval)</div>
@@ -288,6 +293,7 @@ function renderSettings() {
                             </label>
                             <div class="silly-friends-actions">
                                 <button id="silly_friends_join" class="menu_button">Join party</button>
+                                <button id="silly_friends_resync" class="menu_button">Resync</button>
                                 <button id="silly_friends_leave" class="menu_button">Leave</button>
                             </div>
                         </div>
@@ -347,6 +353,9 @@ function renderSettings() {
   );
   $("#silly_friends_join").on("click", () =>
     joinParty().catch(handleActionError),
+  );
+  $("#silly_friends_resync").on("click", () =>
+    forceGuestResync().catch(handleActionError),
   );
   $("#silly_friends_leave").on("click", () =>
     leaveParty().catch(handleActionError),
@@ -660,6 +669,7 @@ async function joinParty() {
     setGuestOnlineStatus();
     await applySnapshot(data);
     connectEventStream();
+    startGuestFullSync();
 
     settings.relayUrl = relayUrl;
     settings.accessCode = accessCode;
@@ -682,6 +692,22 @@ async function leaveParty() {
 
   disconnectRuntime();
   notifyInfo("Left party.");
+}
+
+async function forceGuestResync() {
+  if (!runtime.connected || runtime.isHost || !runtime.token) {
+    throw new Error("Only connected guests can resync from host.");
+  }
+
+  setBusy(true);
+  try {
+    setStatusText("Resyncing host chat...");
+    await refreshState({ forceHostSnapshot: true, cursor: "0" });
+    notifyInfo("Resynced from host.");
+  } finally {
+    setBusy(false);
+    updateUi();
+  }
 }
 
 async function toggleReady() {
@@ -1113,6 +1139,7 @@ async function commitTurnAndGenerate() {
   }
 
   runtime.committing = true;
+  let committedMessages = false;
   updateUi();
 
   try {
@@ -1133,6 +1160,7 @@ async function commitTurnAndGenerate() {
     for (const event of data.events || []) {
       await handleRelayEvent(event);
     }
+    committedMessages = true;
 
     const beforeLength = chat.length;
     runtime.modelGenerationStartIndex = beforeLength;
@@ -1141,7 +1169,11 @@ async function commitTurnAndGenerate() {
       minIndex: beforeLength,
       reason: "commitTurn",
     });
+    scheduleHostSnapshotSync("commitTurn");
   } finally {
+    if (committedMessages) {
+      scheduleHostSnapshotSync("commitTurnFinally");
+    }
     runtime.committing = false;
     updateUi();
   }
@@ -1444,6 +1476,7 @@ async function publishLatestModelMessage({ minIndex = 0, reason = "" } = {}) {
           reason,
         });
         await handleRelayEvent(data.event);
+        scheduleHostSnapshotSync("modelMessage");
       }
     }
   } finally {
@@ -1640,6 +1673,7 @@ async function publishModelSwipe({ messageIndex, reason = "" } = {}) {
           reason,
         });
         await handleRelayEvent(data.event);
+        scheduleHostSnapshotSync("modelSwipe");
       }
     }
   } finally {
@@ -1682,6 +1716,7 @@ async function proposeModelEdit({
   const data = await relayPost("/model-edit/propose", payload);
   if (data.event) {
     await handleRelayEvent(data.event);
+    scheduleHostSnapshotSync("modelEditApproved");
   }
 
   return data;
@@ -1808,11 +1843,46 @@ function startPollingEvents() {
     }
 
     if (runtime.connected) {
-      runtime.pollTimer = setTimeout(poll, 1200);
+      runtime.pollTimer = setTimeout(poll, 700);
     }
   };
 
   runtime.pollTimer = setTimeout(poll, 250);
+}
+
+function startGuestFullSync() {
+  stopGuestFullSync();
+  if (!runtime.connected || runtime.isHost) {
+    return;
+  }
+
+  runtime.guestFullSyncTimer = setInterval(() => {
+    if (
+      !runtime.connected ||
+      runtime.isHost ||
+      !runtime.token ||
+      runtime.guestFullSyncBusy
+    ) {
+      return;
+    }
+
+    runtime.guestFullSyncBusy = true;
+    refreshState({ cursor: "0" })
+      .catch((error) => {
+        logDebug("Scheduled guest full sync failed", error);
+      })
+      .finally(() => {
+        runtime.guestFullSyncBusy = false;
+      });
+  }, 60000);
+}
+
+function stopGuestFullSync() {
+  if (runtime.guestFullSyncTimer) {
+    clearInterval(runtime.guestFullSyncTimer);
+    runtime.guestFullSyncTimer = null;
+  }
+  runtime.guestFullSyncBusy = false;
 }
 
 function scheduleReconnect() {
@@ -1833,19 +1903,22 @@ function scheduleReconnect() {
   }, delay);
 }
 
-async function refreshState() {
+async function refreshState({
+  forceHostSnapshot = false,
+  cursor = String(runtime.lastSeq),
+} = {}) {
   if (!runtime.connected || !runtime.token || !runtime.relayUrl) {
     return;
   }
 
   const data = await relayGet("/state", {
     token: runtime.token,
-    cursor: String(runtime.lastSeq),
+    cursor,
   });
-  await applySnapshot(data);
+  await applySnapshot(data, { forceHostSnapshot });
 }
 
-async function applySnapshot(snapshot) {
+async function applySnapshot(snapshot, { forceHostSnapshot = false } = {}) {
   if (snapshot.partyId) {
     runtime.partyId = snapshot.partyId;
   }
@@ -1873,7 +1946,7 @@ async function applySnapshot(snapshot) {
     }
   }
 
-    if (Array.isArray(snapshot.modelEditProposals)) {
+  if (Array.isArray(snapshot.modelEditProposals)) {
     runtime.modelEditProposals = snapshot.modelEditProposals.slice();
     if (
       runtime.editingModelClientMsgId &&
@@ -1901,7 +1974,7 @@ async function applySnapshot(snapshot) {
   }
 
   if (!runtime.isHost && snapshot.snapshot) {
-    await applyHostSnapshot(snapshot.snapshot);
+    await applyHostSnapshot(snapshot.snapshot, { force: forceHostSnapshot });
   }
 
   for (const event of snapshot.events || []) {
@@ -1909,6 +1982,7 @@ async function applySnapshot(snapshot) {
   }
 
   renderPendingMessages();
+  renderChatTypingIndicator();
   renderModelEditProposals();
   updateUi();
 }
@@ -1999,6 +2073,7 @@ async function handleRelayEvent(event) {
   }
 
   renderPendingMessages();
+  renderChatTypingIndicator();
   renderModelEditProposals();
   updateUi();
 }
@@ -2135,7 +2210,11 @@ async function applyPlayerMessage(event) {
       event.createdAt ? Date.parse(event.createdAt) : Date.now(),
     ),
     mes: payload.text || "",
-    force_avatar: payload.avatarUrl || default_user_avatar,
+    force_avatar:
+      payload.avatarDataUrl ||
+      member.avatarDataUrl ||
+      payload.avatarUrl ||
+      default_user_avatar,
     extra: {
       sillyFriends: {
         partyId: runtime.partyId,
@@ -2427,7 +2506,12 @@ function renderPendingMessages() {
       pending.personaName || member.personaName,
       "Persona",
     );
-    const avatarUrl = pending.avatarUrl || member.avatarUrl || "";
+    const avatarUrl =
+      pending.avatarDataUrl ||
+      member.avatarDataUrl ||
+      pending.avatarUrl ||
+      member.avatarUrl ||
+      "";
     const isOwn = pending.memberId === runtime.memberId;
     const canDelete = isOwn || canModerateActions();
     const isEditing = pending.clientMsgId === runtime.editingClientMsgId;
@@ -2463,6 +2547,25 @@ function renderPendingMessages() {
     wrapper.append(item);
   }
 
+  document.getElementById("chat")?.append(wrapper);
+}
+
+function renderChatTypingIndicator() {
+  $(`#${TYPING_CONTAINER_ID}`).remove();
+
+  if (!runtime.connected) {
+    return;
+  }
+
+  const typingNames = getTypingNames();
+  if (!typingNames.length) {
+    return;
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.id = TYPING_CONTAINER_ID;
+  wrapper.className = "silly-friends-chat-typing";
+  wrapper.textContent = `${typingNames.join(", ")} typing...`;
   document.getElementById("chat")?.append(wrapper);
 }
 
@@ -2604,6 +2707,7 @@ async function editPendingMove(pending) {
   }
 
   renderPendingMessages();
+  renderChatTypingIndicator();
   renderModelEditProposals();
   updateUi();
 }
@@ -2626,6 +2730,7 @@ async function deletePendingMove(pending) {
   } else if (data.clientMsgId) {
     removePendingByClientIds([data.clientMsgId]);
     renderPendingMessages();
+    renderChatTypingIndicator();
     updateUi();
   }
 
@@ -2858,6 +2963,10 @@ async function buildHostSnapshot() {
 }
 
 function serializeSnapshotMessage(message) {
+  const playerMeta = message?.extra?.sillyFriends;
+  const member = playerMeta?.memberId
+    ? runtime.members.get(playerMeta.memberId)
+    : null;
   const snapshotMessage = {
     name: message?.name || "",
     is_user: !!message?.is_user,
@@ -2879,19 +2988,22 @@ function serializeSnapshotMessage(message) {
     }
   }
 
-  if (isShareableAvatarUrl(message?.force_avatar)) {
+  const embeddedAvatar = member?.avatarDataUrl || "";
+  if (embeddedAvatar) {
+    snapshotMessage.force_avatar = embeddedAvatar;
+  } else if (isShareableAvatarUrl(message?.force_avatar)) {
     snapshotMessage.force_avatar = message.force_avatar;
   }
 
   return snapshotMessage;
 }
 
-async function applyHostSnapshot(snapshot) {
+async function applyHostSnapshot(snapshot, { force = false } = {}) {
   const snapshotKey = getHostSnapshotApplyKey(snapshot);
   if (
     !snapshot ||
     runtime.isHost ||
-    runtime.appliedHostSnapshotKey === snapshotKey
+    (!force && runtime.appliedHostSnapshotKey === snapshotKey)
   ) {
     return;
   }
@@ -2911,6 +3023,7 @@ async function applyHostSnapshot(snapshot) {
   );
   if (characterId >= 0) {
     await selectCharacterById(characterId, { switchMenu: false });
+    await openCharacterChat(chatName);
   } else {
     await reloadCurrentChat();
   }
@@ -3417,6 +3530,7 @@ function normalizeRelayError(error, relayUrl) {
 
 function disconnectRuntime({ keepHostRelay = false } = {}) {
   closeEventStream();
+  stopGuestFullSync();
   clearTimeout(runtime.reconnectTimer);
   runtime.reconnectTimer = null;
   restoreOnlineStatus();
@@ -3489,6 +3603,7 @@ function disconnectRuntime({ keepHostRelay = false } = {}) {
   runtime.reconnectAttempts = 0;
 
   renderPendingMessages();
+  renderChatTypingIndicator();
   renderModelEditProposals();
   updateUi();
 }
@@ -3541,6 +3656,7 @@ function hydrateSeenFromChat(partyId) {
 }
 
 function updateUi() {
+  pruneTypingState();
   const turnInfo =
     runtime.turn.mode === "freeform"
       ? "freeform"
@@ -3587,6 +3703,10 @@ function updateUi() {
     "disabled",
     runtime.connected || runtime.committing,
   );
+  $("#silly_friends_resync").prop(
+    "disabled",
+    !runtime.connected || runtime.isHost || runtime.committing,
+  );
   $("#silly_friends_leave").prop(
     "disabled",
     !runtime.connected || runtime.committing,
@@ -3619,6 +3739,7 @@ function updateUi() {
     !showHostSessionSubmenu || !canCommit,
   );
 
+  renderTypingIndicator();
   renderRoster();
   renderModelEditProposals();
 }
@@ -3645,7 +3766,6 @@ function syncTurnControls({ force = false } = {}) {
 function renderRoster() {
   const roster = $("#silly_friends_roster");
   roster.empty();
-  pruneTypingState();
 
   for (const member of runtime.members.values()) {
     const role = String(member.role || (member.isHost ? "host" : "player"));
@@ -3716,24 +3836,26 @@ function renderRoster() {
 
     roster.append(chip);
   }
+}
 
-  const typingNames = Array.from(runtime.typingState.keys())
+function renderTypingIndicator() {
+  const typingNames = getTypingNames();
+  $("#silly_friends_typing")
+    .toggleClass("displayNone", typingNames.length === 0)
+    .text(typingNames.length ? `${typingNames.join(", ")} typing...` : "");
+}
+
+function getTypingNames() {
+  return Array.from(runtime.typingState.keys())
     .map((memberId) =>
       getDisplayName(runtime.members.get(memberId)?.personaName, ""),
     )
     .filter(Boolean);
-  if (typingNames.length) {
-    roster.append(
-      $(`<div class="silly-friends-typing-indicator"></div>`).text(
-        `${typingNames.join(", ")} typing...`,
-      ),
-    );
-  }
 }
 
 function setBusy(isBusy) {
   $(
-    "#silly_friends_host_start, #silly_friends_host_reload, #silly_friends_host_stop, #silly_friends_join, #silly_friends_leave",
+    "#silly_friends_host_start, #silly_friends_host_reload, #silly_friends_host_stop, #silly_friends_join, #silly_friends_resync, #silly_friends_leave",
   ).prop("disabled", isBusy);
 }
 
@@ -4152,6 +4274,7 @@ function handleGenerationStopped() {
 function bindEvents() {
   eventSource.on(event_types.CHAT_CHANGED, () => {
     renderPendingMessages();
+    renderChatTypingIndicator();
     renderModelEditProposals();
     decoratePartyMessages();
   });
