@@ -113,6 +113,7 @@ const runtime = {
   pollBusy: false,
   guestFullSyncTimer: null,
   guestFullSyncBusy: false,
+  lastLifecycleSyncAt: 0,
   reconnectTimer: null,
   reconnectAttempts: 0,
 };
@@ -172,6 +173,8 @@ function notifyInfo(message) {
 
 function renderSettings() {
   if ($("#silly_friends_settings").length) {
+    ensureResyncButton();
+    bindResyncButton();
     return;
   }
 
@@ -303,7 +306,27 @@ function renderSettings() {
         </div>`;
 
   $("#extensions_settings").append(html);
+  bindSettingsHandlers();
+}
 
+function ensureResyncButton() {
+  if ($("#silly_friends_resync").length) {
+    return;
+  }
+
+  const leaveButton = $("#silly_friends_leave");
+  const joinButton = $("#silly_friends_join");
+  const button = $(
+    '<button id="silly_friends_resync" class="menu_button">Resync</button>',
+  );
+  if (leaveButton.length) {
+    leaveButton.before(button);
+  } else if (joinButton.length) {
+    joinButton.after(button);
+  }
+}
+
+function bindSettingsHandlers() {
   $("#silly_friends_prompt_grouping").on("change", function () {
     ensureSettings().promptGrouping = !!this.checked;
     saveSettings();
@@ -354,9 +377,7 @@ function renderSettings() {
   $("#silly_friends_join").on("click", () =>
     joinParty().catch(handleActionError),
   );
-  $("#silly_friends_resync").on("click", () =>
-    forceGuestResync().catch(handleActionError),
-  );
+  bindResyncButton();
   $("#silly_friends_leave").on("click", () =>
     leaveParty().catch(handleActionError),
   );
@@ -395,6 +416,14 @@ function renderSettings() {
       }
     },
   );
+}
+
+function bindResyncButton() {
+  $("#silly_friends_resync")
+    .off("click.sillyFriends")
+    .on("click.sillyFriends", () =>
+      forceGuestResync().catch(handleActionError),
+    );
 }
 
 function installCommitButton() {
@@ -1885,6 +1914,36 @@ function stopGuestFullSync() {
   runtime.guestFullSyncBusy = false;
 }
 
+function scheduleLifecycleGuestResync(reason = "resume") {
+  if (
+    !runtime.connected ||
+    runtime.isHost ||
+    !runtime.token ||
+    runtime.guestFullSyncBusy
+  ) {
+    return;
+  }
+
+  const now = Date.now();
+  if (now - runtime.lastLifecycleSyncAt < 5000) {
+    return;
+  }
+
+  runtime.lastLifecycleSyncAt = now;
+  runtime.guestFullSyncBusy = true;
+  refreshState({ forceHostSnapshot: true, cursor: "0" })
+    .then(() => {
+      logDebug("Lifecycle guest resync completed", reason);
+    })
+    .catch((error) => {
+      logDebug("Lifecycle guest resync failed", reason, error);
+    })
+    .finally(() => {
+      runtime.guestFullSyncBusy = false;
+      updateUi();
+    });
+}
+
 function scheduleReconnect() {
   if (!runtime.connected || runtime.reconnectTimer) {
     return;
@@ -2014,6 +2073,7 @@ async function handleRelayEvent(event) {
       break;
     case "pendingAdded":
       upsertPending(event.payload.pending);
+      notifyPendingAdded(event.payload.pending);
       break;
     case "pendingUpdated":
       upsertPending(event.payload.pending);
@@ -2116,7 +2176,7 @@ function handleMemberTyping(payload) {
 }
 
 function pruneTypingState() {
-  const cutoff = Date.now() - 5000;
+  const cutoff = Date.now() - 8000;
   for (const [memberId, state] of runtime.typingState.entries()) {
     const updatedAt = Date.parse(state?.updatedAt || "");
     if (!Number.isFinite(updatedAt) || updatedAt < cutoff) {
@@ -2138,6 +2198,19 @@ function upsertPending(pending) {
   } else {
     runtime.pending[index] = pending;
   }
+}
+
+function notifyPendingAdded(pending) {
+  if (!pending || pending.memberId === runtime.memberId) {
+    return;
+  }
+
+  const member = runtime.members.get(pending.memberId) || {};
+  const name = getDisplayName(
+    pending.personaName || member.personaName,
+    "Persona",
+  );
+  notifyInfo(`New pending move from ${name}`);
 }
 
 function removePendingByClientIds(clientMsgIds) {
@@ -2231,6 +2304,9 @@ async function applyPlayerMessage(event) {
   };
 
   await appendCanonicalMessage(message, "user");
+  if (!runtime.isHost && payload.memberId !== runtime.memberId) {
+    notifyInfo(`New message from ${speakerName}`);
+  }
 }
 
 async function applyModelMessage(event) {
@@ -2268,6 +2344,9 @@ async function applyModelMessage(event) {
   }
 
   await appendCanonicalMessage(message, "assistant");
+  if (!runtime.isHost) {
+    notifyInfo("New AI message.");
+  }
 }
 
 async function applyModelSwipe(event) {
@@ -3601,6 +3680,7 @@ function disconnectRuntime({ keepHostRelay = false } = {}) {
   runtime.seenClientMsgIds.clear();
   runtime.seenModelClientMsgIds.clear();
   runtime.reconnectAttempts = 0;
+  runtime.lastLifecycleSyncAt = 0;
 
   renderPendingMessages();
   renderChatTypingIndicator();
@@ -4287,6 +4367,21 @@ function bindEvents() {
   eventSource.on(event_types.PERSONA_CHANGED, handleLocalPersonaChanged);
   eventSource.on(event_types.PERSONA_UPDATED, handleLocalPersonaChanged);
   eventSource.on(event_types.PERSONA_RENAMED, handleLocalPersonaChanged);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      scheduleLifecycleGuestResync("visibilitychange");
+    }
+  });
+  window.addEventListener("pageshow", () => {
+    scheduleLifecycleGuestResync("pageshow");
+  });
+  window.addEventListener("focus", () => {
+    scheduleLifecycleGuestResync("focus");
+  });
+  window.addEventListener("online", () => {
+    scheduleLifecycleGuestResync("online");
+  });
 }
 
 jQuery(() => {
