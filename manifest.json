@@ -1,0 +1,14 @@
+{
+    "display_name": "silly-friends",
+    "loading_order": 1000,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Aster/a/",
+    "version": "0.1.0",
+    "homePage": "",
+    "auto_update": false,
+    "minimum_client_version": "1.15.0",
+    "generate_interceptor": "sillyFriendsGenerateInterceptor"
+}

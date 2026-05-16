@@ -1,0 +1,416 @@
+#silly_friends_settings {
+    margin: 0;
+}
+
+#silly_friends_settings .inline-drawer-content {
+    padding: 8px 0 10px;
+}
+
+#silly_friends_settings .inline-drawer-content > .silly-friends-stack {
+    gap: 8px;
+}
+
+#silly_friends_settings .silly-friends-row {
+    display: flex;
+    gap: 6px 7px;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    margin: 0;
+}
+
+#silly_friends_settings .silly-friends-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+#silly_friends_settings .silly-friends-section {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+#silly_friends_settings .silly-friends-stack > b,
+#silly_friends_settings .silly-friends-section > b {
+    line-height: 1.2;
+}
+
+#silly_friends_settings hr {
+    width: 100%;
+    margin: 2px 0;
+    border: 0;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    opacity: 0.7;
+}
+
+#silly_friends_settings .checkbox_label {
+    display: inline-flex;
+    flex: 0 1 auto;
+    width: auto;
+    margin: 0;
+    min-height: 24px;
+    align-items: center;
+    gap: 6px;
+    padding: 0;
+}
+
+#silly_friends_settings .silly-friends-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: min(145px, 100%);
+    max-width: 100%;
+    flex: 1 1 145px;
+    margin: 0;
+    color: var(--SmartThemeBodyColor);
+    font-size: calc(var(--mainFontSize) * 0.9);
+    line-height: 1.2;
+}
+
+#silly_friends_settings input[type="text"],
+#silly_friends_settings input[type="password"],
+#silly_friends_settings input[type="number"],
+#silly_friends_settings select.text_pole {
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    min-height: 30px;
+    padding: 4px 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    background-color: var(--black30a);
+    color: var(--SmartThemeBodyColor);
+}
+
+#silly_friends_settings select.text_pole {
+    cursor: pointer;
+}
+
+#silly_friends_settings .silly-friends-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    align-items: center;
+    justify-content: flex-end;
+    margin-left: auto;
+}
+
+#silly_friends_host_session_submenu {
+    margin-top: 2px;
+}
+
+#silly_friends_host_session_submenu .inline-drawer-content {
+    padding-top: 8px;
+}
+
+#silly_friends_settings .silly-friends-host-session-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+#silly_friends_settings .silly-friends-row-controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+    justify-items: stretch;
+    align-items: center;
+}
+
+#silly_friends_settings .silly-friends-row-controls .menu_button {
+    width: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+
+#silly_friends_settings .silly-friends-actions .menu_button {
+    margin: 0;
+    min-height: 30px;
+    padding-inline: 10px;
+    white-space: nowrap;
+}
+
+#silly_friends_ready_toggle,
+#silly_friends_delete_all_pending,
+#silly_friends_turn_apply,
+#silly_friends_turn_next,
+#silly_friends_party_start {
+    margin: 0;
+    min-height: 30px;
+}
+
+#silly_friends_settings input.text_pole[readonly] {
+    color: var(--SmartThemeEmColor);
+    opacity: 0.85;
+    cursor: text;
+}
+
+#silly_friends_status {
+    color: var(--SmartThemeEmColor);
+}
+
+#silly_friends_status.silly-friends-status-connected {
+    color: var(--SmartThemeQuoteColor);
+}
+
+#silly_friends_status.silly-friends-status-disconnected {
+    color: var(--SmartThemeEmColor);
+}
+
+#silly_friends_roster {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.silly-friends-member-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background: var(--black30a);
+}
+
+.silly-friends-member-chip img {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
+.silly-friends-roster-controls {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: 4px;
+}
+
+.silly-friends-roster-controls .menu_button {
+    min-height: 20px;
+    padding: 0 6px;
+    margin: 0;
+    font-size: 0.8em;
+}
+
+#silly_friends_commit_turn {
+    order: 3;
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    color: inherit;
+    font-size: inherit;
+    line-height: 1;
+}
+
+#rightSendForm > #silly_friends_commit_turn {
+    width: var(--bottomFormBlockSize);
+    height: var(--bottomFormBlockSize);
+}
+
+#silly_friends_commit_turn.disabled,
+#silly_friends_commit_turn[aria-disabled="true"] {
+    cursor: default;
+    filter: none;
+    opacity: 0.35;
+    pointer-events: none;
+}
+
+#silly_friends_pending_messages {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 0;
+}
+
+.silly-friends-pending-message {
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr);
+    gap: 8px;
+    margin: 0 8px;
+    padding: 8px;
+    border: 1px dashed var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background: var(--black30a);
+    opacity: 0.78;
+}
+
+.silly-friends-pending-message.is-editing {
+    border-style: solid;
+    opacity: 0.9;
+}
+
+.silly-friends-avatar {
+    position: relative;
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    overflow: hidden;
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+}
+
+.silly-friends-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.silly-friends-avatar[data-image-failed="true"] img {
+    display: none;
+}
+
+.silly-friends-avatar-fallback {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    color: var(--SmartThemeBodyColor);
+}
+
+.silly-friends-pending-body {
+    min-width: 0;
+}
+
+.silly-friends-pending-head {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 4px;
+    min-height: 22px;
+}
+
+.silly-friends-pending-name {
+    font-weight: 700;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.silly-friends-pending-state {
+    font-size: 0.85em;
+    color: var(--SmartThemeQuoteColor);
+    white-space: nowrap;
+}
+
+.silly-friends-pending-actions {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+    margin-left: auto;
+}
+
+.silly-friends-pending-action {
+    width: 22px;
+    height: 22px;
+    display: inline-grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    background: var(--black30a);
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    opacity: 0.75;
+}
+
+.silly-friends-pending-action:hover {
+    opacity: 1;
+    filter: brightness(1.15);
+}
+
+.silly-friends-pending-text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.mes.silly-friends-party-message .avatar img {
+    object-fit: cover;
+}
+
+.mes.silly-friends-party-message .avatar {
+    position: relative;
+    overflow: hidden;
+}
+
+.mes.silly-friends-party-message .avatar[data-image-failed="true"] img {
+    visibility: hidden;
+}
+
+.silly-friends-chat-avatar-fallback {
+    position: absolute;
+    inset: 0;
+    display: none;
+    place-items: center;
+    font-weight: 700;
+    background: var(--SmartThemeBlurTintColor);
+    color: var(--SmartThemeBodyColor);
+}
+
+.mes.silly-friends-party-message
+    .avatar[data-image-failed="true"]
+    .silly-friends-chat-avatar-fallback {
+    display: grid;
+}
+
+#silly_friends_model_edit_panel {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background: var(--black30a);
+    padding: 8px;
+}
+
+.silly-friends-model-edit-title {
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+#silly_friends_model_edit_list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.silly-friends-model-edit-item {
+    border: 1px dashed var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    padding: 6px;
+}
+
+.silly-friends-model-edit-item.is-editing {
+    border-style: solid;
+}
+
+.silly-friends-model-edit-head {
+    font-size: 0.9em;
+    color: var(--SmartThemeQuoteColor);
+    margin-bottom: 4px;
+}
+
+.silly-friends-model-edit-text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin-bottom: 6px;
+}
+
+.silly-friends-model-edit-actions-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.silly-friends-model-edit-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.silly-friends-model-edit-btn,
+.silly-friends-model-approve-btn {
+    min-height: 24px;
+    padding: 3px 8px;
+}
