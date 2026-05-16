@@ -62,10 +62,19 @@ const runtime = {
   memberId: "",
   hostMemberId: "",
   appliedHostSnapshotVersion: 0,
+  appliedHostSnapshotKey: "",
   lastPersonaSnapshotKey: "",
   personaSnapshotTimer: null,
   personaSnapshotBusy: false,
   personaSnapshotQueued: false,
+  hostSnapshotSyncTimer: null,
+  hostSnapshotSyncBusy: false,
+  hostSnapshotSyncQueued: false,
+  typingState: new Map(),
+  typingSendTimer: null,
+  typingStopTimer: null,
+  typingLastSentAt: 0,
+  typingLastText: "",
   modelPublishTimer: null,
   modelPublishBusy: false,
   modelPublishQueued: false,
@@ -427,7 +436,12 @@ function installInputCapture() {
 
   sendButton?.addEventListener("click", interceptSendClick, true);
   textarea?.addEventListener("keydown", interceptTextareaEnter, true);
-  textarea?.addEventListener("input", updateUi);
+  textarea?.addEventListener("input", handleTextareaInput);
+}
+
+function handleTextareaInput() {
+  updateUi();
+  scheduleTypingPublish();
 }
 
 function interceptSendClick(event) {
@@ -842,6 +856,94 @@ async function setMemberMuted(memberId, muted) {
   }
 }
 
+async function kickMember(memberId) {
+  if (!runtime.connected || !runtime.token) {
+    throw new Error("Not connected to a party.");
+  }
+
+  if (!canModerateActions()) {
+    throw new Error("Only host/cohost can kick members.");
+  }
+
+  const id = sanitizeRelayId(memberId);
+  if (!id) {
+    throw new Error("Invalid member id.");
+  }
+
+  const data = await relayPost("/member/kick", {
+    token: runtime.token,
+    memberId: id,
+  });
+
+  if (Array.isArray(data.events)) {
+    for (const event of data.events) {
+      await handleRelayEvent(event);
+    }
+  } else if (data.event) {
+    await handleRelayEvent(data.event);
+  }
+}
+
+function scheduleTypingPublish() {
+  if (!runtime.connected || !runtime.token || !runtime.relayUrl) {
+    return;
+  }
+
+  const textarea = document.getElementById("send_textarea");
+  const text = String(textarea?.value || "");
+  const isTyping = text.trim().length > 0;
+  const now = Date.now();
+
+  if (runtime.typingStopTimer) {
+    clearTimeout(runtime.typingStopTimer);
+    runtime.typingStopTimer = null;
+  }
+
+  if (!isTyping) {
+    runtime.typingLastText = "";
+    void publishTyping(false);
+    return;
+  }
+
+  runtime.typingLastText = text;
+  runtime.typingStopTimer = setTimeout(() => {
+    runtime.typingStopTimer = null;
+    runtime.typingLastText = "";
+    void publishTyping(false);
+  }, 2500);
+
+  if (now - runtime.typingLastSentAt < 1200) {
+    if (!runtime.typingSendTimer) {
+      runtime.typingSendTimer = setTimeout(() => {
+        runtime.typingSendTimer = null;
+        void publishTyping(true);
+      }, 1200);
+    }
+    return;
+  }
+
+  void publishTyping(true);
+}
+
+async function publishTyping(isTyping) {
+  if (!runtime.connected || !runtime.token || !runtime.relayUrl) {
+    return;
+  }
+
+  runtime.typingLastSentAt = Date.now();
+  try {
+    const data = await relayPost("/typing", {
+      token: runtime.token,
+      typing: !!isTyping,
+    });
+    if (data.event) {
+      await handleRelayEvent(data.event);
+    }
+  } catch (error) {
+    logDebug("Failed to publish typing state", error);
+  }
+}
+
 async function submitTextareaAsPending({ allowEmpty = false } = {}) {
   const textarea = document.getElementById("send_textarea");
   const text = String(textarea?.value || "").trim();
@@ -1068,10 +1170,59 @@ async function publishHostSnapshot() {
 
   const snapshot = await buildHostSnapshot();
   snapshot.seq = runtime.lastSeq;
-  await relayPost("/snapshot", {
+  const data = await relayPost("/snapshot", {
     token: runtime.token,
     snapshot,
   });
+  if (data.event) {
+    await handleRelayEvent(data.event);
+  }
+}
+
+function scheduleHostSnapshotSync(reason = "chatChanged") {
+  if (!runtime.connected || !runtime.isHost || !runtime.token) {
+    return;
+  }
+
+  runtime.hostSnapshotSyncQueued = true;
+  clearTimeout(runtime.hostSnapshotSyncTimer);
+  runtime.hostSnapshotSyncTimer = setTimeout(() => {
+    runtime.hostSnapshotSyncTimer = null;
+    publishQueuedHostSnapshot(reason).catch((error) => {
+      logDebug("Failed to sync host snapshot", error);
+    });
+  }, 350);
+}
+
+async function publishQueuedHostSnapshot(reason = "chatChanged") {
+  if (!runtime.connected || !runtime.isHost || !runtime.token) {
+    return;
+  }
+
+  if (runtime.hostSnapshotSyncBusy) {
+    runtime.hostSnapshotSyncQueued = true;
+    return;
+  }
+
+  runtime.hostSnapshotSyncBusy = true;
+  runtime.hostSnapshotSyncQueued = true;
+  try {
+    while (
+      runtime.connected &&
+      runtime.isHost &&
+      runtime.token &&
+      runtime.hostSnapshotSyncQueued
+    ) {
+      runtime.hostSnapshotSyncQueued = false;
+      logDebug("Publishing host snapshot sync", reason);
+      await publishHostSnapshot();
+    }
+  } finally {
+    runtime.hostSnapshotSyncBusy = false;
+    if (runtime.hostSnapshotSyncQueued) {
+      scheduleHostSnapshotSync(reason);
+    }
+  }
 }
 
 function schedulePersonaSnapshot() {
@@ -1722,7 +1873,7 @@ async function applySnapshot(snapshot) {
     }
   }
 
-  if (Array.isArray(snapshot.modelEditProposals)) {
+    if (Array.isArray(snapshot.modelEditProposals)) {
     runtime.modelEditProposals = snapshot.modelEditProposals.slice();
     if (
       runtime.editingModelClientMsgId &&
@@ -1737,6 +1888,16 @@ async function applySnapshot(snapshot) {
 
   if (snapshot.turn && typeof snapshot.turn === "object") {
     runtime.turn = normalizeTurnState(snapshot.turn);
+  }
+
+  if (snapshot.typing && typeof snapshot.typing === "object") {
+    runtime.typingState.clear();
+    for (const [memberId, typing] of Object.entries(snapshot.typing)) {
+      if (typing?.typing) {
+        runtime.typingState.set(memberId, typing);
+      }
+    }
+    pruneTypingState();
   }
 
   if (!runtime.isHost && snapshot.snapshot) {
@@ -1770,6 +1931,12 @@ async function handleRelayEvent(event) {
       break;
     case "memberUpdated":
       runtime.members.set(event.payload.member.id, event.payload.member);
+      break;
+    case "memberKicked":
+      handleMemberKicked(event.payload || {});
+      break;
+    case "memberTyping":
+      handleMemberTyping(event.payload || {});
       break;
     case "pendingAdded":
       upsertPending(event.payload.pending);
@@ -1820,6 +1987,8 @@ async function handleRelayEvent(event) {
         await refreshState();
       }
       break;
+    case "keepAlive":
+      break;
     case "partyStopped":
       notifyInfo("Party host stopped the relay.");
       disconnectRuntime();
@@ -1832,6 +2001,53 @@ async function handleRelayEvent(event) {
   renderPendingMessages();
   renderModelEditProposals();
   updateUi();
+}
+
+function handleMemberKicked(payload) {
+  const memberId = sanitizeRelayId(payload.memberId);
+  if (!memberId) {
+    return;
+  }
+
+  runtime.members.delete(memberId);
+  runtime.typingState.delete(memberId);
+  runtime.pending = runtime.pending.filter(
+    (pending) => pending.memberId !== memberId,
+  );
+
+  if (memberId === runtime.memberId) {
+    notifyInfo("You were kicked from the party.");
+    disconnectRuntime();
+  }
+}
+
+function handleMemberTyping(payload) {
+  const memberId = sanitizeRelayId(payload.memberId);
+  if (!memberId || memberId === runtime.memberId) {
+    return;
+  }
+
+  if (payload.typing) {
+    runtime.typingState.set(memberId, {
+      memberId,
+      typing: true,
+      updatedAt: payload.updatedAt || new Date().toISOString(),
+    });
+  } else {
+    runtime.typingState.delete(memberId);
+  }
+
+  pruneTypingState();
+}
+
+function pruneTypingState() {
+  const cutoff = Date.now() - 5000;
+  for (const [memberId, state] of runtime.typingState.entries()) {
+    const updatedAt = Date.parse(state?.updatedAt || "");
+    if (!Number.isFinite(updatedAt) || updatedAt < cutoff) {
+      runtime.typingState.delete(memberId);
+    }
+  }
 }
 
 function upsertPending(pending) {
@@ -2500,29 +2716,10 @@ function installModelEditActions(element, message, modelMeta) {
   }
 
   actions.innerHTML = "";
-
-  const proposal = runtime.modelEditProposals.find(
-    (item) =>
-      item.modelClientMsgId === modelMeta.clientMsgId &&
-      item.memberId === runtime.memberId,
-  );
-
-  const suggestButton = document.createElement("button");
-  suggestButton.type = "button";
-  suggestButton.className = "menu_button silly-friends-model-edit-btn";
-  suggestButton.textContent = proposal
-    ? "Edit my bot edit proposal"
-    : "Suggest bot message edit";
-  suggestButton.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    beginModelEditProposal(
-      modelMeta.clientMsgId,
-      message.mes || "",
-      proposal,
-    ).catch(handleActionError);
-  });
-  actions.append(suggestButton);
+  if (!runtime.isHost) {
+    actions.remove();
+    return;
+  }
 
   if (runtime.isHost) {
     const openForMessage = runtime.modelEditProposals.filter(
@@ -2690,10 +2887,11 @@ function serializeSnapshotMessage(message) {
 }
 
 async function applyHostSnapshot(snapshot) {
+  const snapshotKey = getHostSnapshotApplyKey(snapshot);
   if (
     !snapshot ||
     runtime.isHost ||
-    runtime.appliedHostSnapshotVersion === snapshot.version
+    runtime.appliedHostSnapshotKey === snapshotKey
   ) {
     return;
   }
@@ -2719,6 +2917,32 @@ async function applyHostSnapshot(snapshot) {
 
   hydrateSeenFromSnapshot(snapshot);
   runtime.appliedHostSnapshotVersion = snapshot.version;
+  runtime.appliedHostSnapshotKey = snapshotKey;
+}
+
+function getHostSnapshotApplyKey(snapshot) {
+  if (!snapshot) {
+    return "";
+  }
+
+  const messages = Array.isArray(snapshot.chat?.messages)
+    ? snapshot.chat.messages
+    : [];
+  const lastMessage = messages[messages.length - 1] || {};
+  return stableHash(
+    JSON.stringify({
+      version: snapshot.version || 0,
+      seq: snapshot.seq || 0,
+      chatName: snapshot.chat?.name || "",
+      messageCount: messages.length,
+      lastMessage: {
+        name: lastMessage.name || "",
+        isUser: !!lastMessage.is_user,
+        text: lastMessage.mes || "",
+        extra: lastMessage.extra || {},
+      },
+    }),
+  );
 }
 
 function findReusableSnapshotCharacterAvatar(snapshot) {
@@ -3211,11 +3435,23 @@ function disconnectRuntime({ keepHostRelay = false } = {}) {
   runtime.memberId = "";
   runtime.hostMemberId = "";
   runtime.appliedHostSnapshotVersion = 0;
+  runtime.appliedHostSnapshotKey = "";
   runtime.lastPersonaSnapshotKey = "";
   clearTimeout(runtime.personaSnapshotTimer);
   runtime.personaSnapshotTimer = null;
   runtime.personaSnapshotBusy = false;
   runtime.personaSnapshotQueued = false;
+  clearTimeout(runtime.hostSnapshotSyncTimer);
+  runtime.hostSnapshotSyncTimer = null;
+  runtime.hostSnapshotSyncBusy = false;
+  runtime.hostSnapshotSyncQueued = false;
+  clearTimeout(runtime.typingSendTimer);
+  clearTimeout(runtime.typingStopTimer);
+  runtime.typingSendTimer = null;
+  runtime.typingStopTimer = null;
+  runtime.typingLastSentAt = 0;
+  runtime.typingLastText = "";
+  runtime.typingState.clear();
   clearTimeout(runtime.modelPublishTimer);
   runtime.modelPublishTimer = null;
   runtime.modelPublishBusy = false;
@@ -3409,6 +3645,7 @@ function syncTurnControls({ force = false } = {}) {
 function renderRoster() {
   const roster = $("#silly_friends_roster");
   roster.empty();
+  pruneTypingState();
 
   for (const member of runtime.members.values()) {
     const role = String(member.role || (member.isHost ? "host" : "player"));
@@ -3466,10 +3703,31 @@ function renderRoster() {
       });
       controls.append(mute);
 
+      if (!member.isHost) {
+        const kick = $('<button type="button" class="menu_button">kick</button>');
+        kick.on("click", () => {
+          kickMember(member.id).catch(handleActionError);
+        });
+        controls.append(kick);
+      }
+
       chip.append(controls);
     }
 
     roster.append(chip);
+  }
+
+  const typingNames = Array.from(runtime.typingState.keys())
+    .map((memberId) =>
+      getDisplayName(runtime.members.get(memberId)?.personaName, ""),
+    )
+    .filter(Boolean);
+  if (typingNames.length) {
+    roster.append(
+      $(`<div class="silly-friends-typing-indicator"></div>`).text(
+        `${typingNames.join(", ")} typing...`,
+      ),
+    );
   }
 }
 
@@ -3860,6 +4118,14 @@ function handleMessageSwiped(messageId) {
   });
 }
 
+function handleMessageDeleted() {
+  if (!runtime.connected || !runtime.isHost || !runtime.token) {
+    return;
+  }
+
+  scheduleHostSnapshotSync("messageDeleted");
+}
+
 function handleGenerationEnded() {
   updateUi();
   if (
@@ -3892,6 +4158,7 @@ function bindEvents() {
   eventSource.on(event_types.GENERATION_STARTED, updateUi);
   eventSource.on(event_types.MESSAGE_RECEIVED, handleModelMessageReceived);
   eventSource.on(event_types.MESSAGE_SWIPED, handleMessageSwiped);
+  eventSource.on(event_types.MESSAGE_DELETED, handleMessageDeleted);
   eventSource.on(event_types.GENERATION_ENDED, handleGenerationEnded);
   eventSource.on(event_types.GENERATION_STOPPED, handleGenerationStopped);
   eventSource.on(event_types.PERSONA_CHANGED, handleLocalPersonaChanged);
